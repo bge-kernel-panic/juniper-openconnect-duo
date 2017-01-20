@@ -122,15 +122,19 @@ dsid = get_dsid(b.session.cookies)
 if not dsid:
     print("Unable to find DSID, aborting")
     sys.exit(1)
-
-p = subprocess.Popen(['openconnect', '--juniper', '-C', 'DSID='+dsid, args.server],
+oc_args = ['openconnect', '--juniper', '-C', 'DSID='+dsid]
+if args.debug:
+    oc_args.append('--dump-http-traffic')
+oc_args.append(args.server)
+p = subprocess.Popen(oc_args,
                       stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
 try:
     signout = False
     for line in iter(p.stdout.readline, ''):
         line = line.decode('utf-8')
         print(line, end='')
-        if line.startswith('ESP session established'):
+        if line.startswith('ESP session established') or (line.startswith('Connected as') 
+                                                      and line.endswith(', using SSL')):
             # set the routes
             if not args.no_routes:
                 subprocess.call(['ip', 'route', 'del', 'default'])
