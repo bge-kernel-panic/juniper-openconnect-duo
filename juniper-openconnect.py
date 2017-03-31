@@ -15,9 +15,6 @@ import bs4.builder
 import logging
 
 # Change those as you wish
-DEFAULT_VPN_ROUTES = ['10.0.0.0/8']
-DEFAULT_IFACE = 'eth0'
-DEFAULT_VPN_IFACE = 'tun0'
 DEFAULT_PASSWORD2_METHOD = 'push'
 
 # Fix a problem in the "already logged in" form, there's an extra comma after an
@@ -42,14 +39,6 @@ p.add_argument('--username', help='Your username if you want to pass it directly
 p.add_argument('--secondary', default='push',
                choices=['push', 'phone', 'pin'],
                help='Secondary password, if any.  Push=Duo Push, phone=Callback, pin=PIN from device, you will be prompted.  Note that I never got PIN support to work...')
-p.add_argument('--routes', action='append', default=DEFAULT_VPN_ROUTES,
-               help='Routes to set.  Defaults to ' + ', '.join(DEFAULT_VPN_ROUTES))
-p.add_argument('--no-routes', action='store_const', const=True,
-               help='If specified, do not set any routes after connecting')
-p.add_argument('--main-iface', help='Main network interface, defaults to ' + DEFAULT_IFACE,
-               default=DEFAULT_IFACE)
-p.add_argument('--vpn-iface', help='VPN network interface, defaults to ' + DEFAULT_VPN_IFACE,
-               default=DEFAULT_VPN_IFACE)
 p.add_argument('--debug', action='store_const', const=True,
                help='Trace HTTP traffic.  WARNING: your password will be shown on stdout.')
 
@@ -128,20 +117,15 @@ if args.debug:
 oc_args.append(args.server)
 p = subprocess.Popen(oc_args,
                       stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+signout = False
 try:
-    signout = False
     for line in iter(p.stdout.readline, ''):
         line = line.decode('utf-8')
         print(line, end='')
-        if line.startswith('ESP session established') or (line.startswith('Connected as') 
-                                                      and line.endswith(', using SSL')):
-            # set the routes
-            if not args.no_routes:
-                subprocess.call(['ip', 'route', 'del', 'default'])
-                subprocess.call(['ip', 'route', 'add', 'default', 'via', '192.168.1.1', 'dev', args.main_iface])
-                for r in args.routes:
-                    subprocess.call(['ip', 'route', 'add', r, 'scope', 'link', 'dev', args.vpn_iface])
-
+        if line.startswith('Connected as') and line.rstrip().endswith(', using SSL'):
+            print('Press CTRL-C to exit')
+            signout = True
+        elif line.startswith('ESP session established'):
             print('Press enter to exit')
             input()
             signout = True
@@ -149,17 +133,20 @@ try:
         elif line.startswith('Creating SSL connection failed'):
             print('Failed; abort')
             break
+except BaseException as e:
+    print('Exception, aborting.')
+    if args.debug:
+        print(e)
+finally:
     # force signout
     if signout:
+        print('Disconnect.')
         # hit the signout URL
         # don't handle redirects because for some reason it doesn't
         # work -- possibly because routing table gets reset
         b.get(''.join(['https://', args.server, '/dana-na/auth/logout.cgi']),
               allow_redirects=False,
               cookies=b.session.cookies)
-except BaseException as e:
-    print(e)
-finally:
     try:
         p.poll()
         if p.returncode is None:
@@ -172,4 +159,4 @@ finally:
         if p.returncode is None:
             p.wait()
     except BaseException as e:
-        print(e)    
+        print(e)
