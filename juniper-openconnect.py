@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-#from __future__ import print_function;
 import getpass
 import subprocess
 import os
@@ -7,15 +6,12 @@ import sys
 import bs4
 import urllib
 import argparse
+from pprint import pprint
 from http.client import HTTPConnection
-
 import mechanicalsoup
 import bs4.builder
 
 import logging
-
-# Change those as you wish
-DEFAULT_PASSWORD2_METHOD = 'push'
 
 # Fix a problem in the "already logged in" form, there's an extra comma after an
 # attribute value that breaks beautiful soup.  Not sure whether this is specific
@@ -33,24 +29,28 @@ def get_dsid(cookies):
     return cookies.get('DSID', None)
 
 
-p = argparse.ArgumentParser(description='Automate connection to Juniper VPN, with support for DUO')
+p = argparse.ArgumentParser(description='Automate connection to Juniper VPN, with support for FortiNet')
 p.add_argument('server', help='Address of VPN server (without http prefix)')
 p.add_argument('--username', help='Your username if you want to pass it directly')
-p.add_argument('--secondary', default='push',
-               choices=['push', 'phone', 'pin'],
-               help='Secondary password, if any.  Push=Duo Push, phone=Callback, pin=PIN from device, you will be prompted.  Note that I never got PIN support to work...')
+p.add_argument('--pwfile', help='Read user password from file')
+p.add_argument('--token', help='Manual FortiNet token input', action='store_const', const=True)
 p.add_argument('--debug', action='store_const', const=True,
                help='Trace HTTP traffic.  WARNING: your password will be shown on stdout.')
 
 args = p.parse_args()
 
-username = args.username if args.username else input('Please input your username: ')
-password = getpass.getpass('Please input your password: ')
-if args.secondary == 'pin':
-    secondary = getpass.getpass('Please input your PIN: ')
-else:
-    secondary = args.secondary
 
+username = args.username if args.username else input('WebMD Username: ')
+
+if args.pwfile:
+    pwfile_fh = open (args.pwfile, "r")
+    password = pwfile_fh.read().rstrip ()
+    pwfile_fh.close ()
+else:
+    password = getpass.getpass ('WebMD Password: ')
+
+fortinet_token = 'push' if not args.token else input ('FortiNet PIN: ')
+    
 dsid = None
 
 logging.basicConfig()
@@ -60,50 +60,51 @@ if args.debug:
     HTTPConnection.debuglevel = 1
     logger.setLevel(logging.DEBUG)
 
-b = mechanicalsoup.Browser(soup_config=dict(builder=MyTreeBuilder()))
+b = mechanicalsoup.StatefulBrowser()
+b.open ('https://' + args.server)
+b.select_form ()
+b['username']=username
+b['password']=password
+response = b.submit_selected()
 
-login_page = b.get(''.join(['https://', args.server]))
-login_form = login_page.soup.find('form', dict(name='frmLogin'))
-login_form.find('input', dict(name='username'))['value'] = username
-login_form.find('input', dict(name='password'))['value'] = password
-c = login_form.find('input', dict(name='password#2'))
-if c is not None:
-    c['value'] = args.secondary
-if args.secondary == 'push':
-    print('Pushing to DUO, please authenticate')
-elif args.secondary == 'call':
-    print('Calling from DUO, please pick up and answer')
-
-login_response = b.submit(login_form, login_page.url)
-if 'p=failed' in login_response.url:
+if 'p=failed' in response.url:
     print('Login failed, please try again')
     sys.exit(1)
+
+b.select_form ()
+b['password']=fortinet_token
+
+if fortinet_token == 'push':
+    print('Pushing to FortiNet, please authenticate')
+
+response = b.submit_selected()
 
 dsid = get_dsid(b.session.cookies)
 
 if not dsid:
     # probably a form asking for closing sessions
-    close_form = login_response.soup.find('form', dict(name='frmConfirmation'))
+    close_form = b.select_form ('form[name=frmConfirmation]')
     if close_form is None:
         print('Unknown form after login, the script will not work, sorry!')
         print('Please modify the script accordingly')
         sys.exit(2)
     
+    print (close_form.content)
     c = close_form.find_all('input', dict(type='checkbox', name='postfixSID'))
 
     vals = []
     for cb in c:
         vals.append(cb['value'])
-    url = urllib.parse.urljoin(login_response.url, close_form['action'])
+    url = urllib.parse.urljoin(fortinet_page.url, close_form['action'])
     # unfortunately FormDataStr is *outside* the form according to bs4,
     # so we have to extract it manually
     # we could be more robust by finding all hidden form fields though
-    login_response = b.post(url,
+    fortinet_page = b.post(url,
                             data=dict(postfixSID=vals,
                                       btnContinue=close_form.find('input',
                                                                   dict(type='submit',
                                                                        name='btnContinue'))['value'],
-                                      FormDataStr=login_response.soup.find('input', dict(name='FormDataStr'))['value']),
+                                      FormDataStr=fortinet_page.soup.find('input', dict(name='FormDataStr'))['value']),
                             cookies=b.session.cookies,
                             allow_redirects=False)
 
